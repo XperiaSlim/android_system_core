@@ -91,6 +91,16 @@ typedef enum {
                                                 at the audio HAL. */
 } audio_source_t;
 
+#ifdef QCOM_HARDWARE
+typedef enum {
+    QCOM_AUDIO_SOURCE_DEFAULT                       = 0x100,
+    QCOM_AUDIO_SOURCE_DIGITAL_BROADCAST_MAIN_AD     = 0x101,
+    QCOM_AUDIO_SOURCE_DIGITAL_BROADCAST_MAIN_ONLY   = 0x104,
+    QCOM_AUDIO_SOURCE_ANALOG_BROADCAST              = 0x102,
+    QCOM_AUDIO_SOURCE_HDMI_IN                       = 0x103,
+} qcom_audio_source_t;
+#endif
+
 /* special audio session values
  * (XXX: should this be living in the audio effects land?)
  */
@@ -489,6 +499,24 @@ enum {
 
 typedef uint32_t audio_devices_t;
 
+#ifdef STE_AUDIO
+
+// AUDIO_INPUT_CLIENT_ID_BASE provide a means to refer to client Id´s not
+// explicitly defined in the enum audio_input_clients
+#define AUDIO_INPUT_CLIENT_ID_BASE AUDIO_INPUT_CLIENT_ID1
+
+// AUDIO_INPUT_CLIENT_ID_BASE provide a means to refer to client Id´s not explicitly defined
+// in the enum audio_input_clients
+typedef enum audio_input_clients {
+        AUDIO_INPUT_CLIENT_ID1 = 0x1,
+        AUDIO_INPUT_CLIENT_ID2 = 0x2,
+        AUDIO_INPUT_CLIENT_ID3 = 0x3,
+        AUDIO_INPUT_CLIENT_ID4 = 0x4,
+        AUDIO_INPUT_CLIENT_PLAYBACK = 0x80000000, // request client of playback type
+        AUDIO_INPUT_CLIENT_RECORD = 0x80000001   // request client of recording type
+} audio_input_clients;
+#endif
+
 /* the audio output flags serve two purposes:
  * - when an AudioTrack is created they indicate a "wish" to be connected to an
  * output stream with attributes corresponding to the specified flags
@@ -760,6 +788,28 @@ static inline bool audio_is_supported_compressed(audio_format_t format)
     else
         return false;
 }
+
+static inline bool audio_is_compress_capture_format(audio_format_t format)
+{
+    if (format == AUDIO_FORMAT_AMR_WB)
+        return true;
+    else
+        return false;
+}
+
+static inline bool audio_is_compress_voip_format(audio_format_t format)
+{
+
+    if (format == AUDIO_FORMAT_AMR_NB ||
+        format == AUDIO_FORMAT_AMR_WB ||
+        format == AUDIO_FORMAT_EVRC ||
+        format == AUDIO_FORMAT_EVRCB ||
+        format == AUDIO_FORMAT_EVRCWB ||
+        format == AUDIO_FORMAT_EVRCNW)
+        return true;
+    else
+        return false;
+}
 #endif
 
 static inline size_t audio_bytes_per_sample(audio_format_t format)
@@ -795,6 +845,7 @@ static inline size_t audio_bytes_per_sample(audio_format_t format)
         break;
 #endif
     default:
+        size = sizeof(uint8_t);
         break;
     }
     return size;
