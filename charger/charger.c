@@ -67,7 +67,7 @@
 #define BATTERY_FULL_THRESH     95
 
 #define LAST_KMSG_PATH          "/proc/last_kmsg"
-#define LAST_KMSG_MAX_SZ        (64 * 1024)
+#define LAST_KMSG_MAX_SZ        (32 * 1024)
 
 #if 1
 #define LOGE(x...) do { KLOG_ERROR("charger", x); } while (0)
@@ -648,7 +648,7 @@ static int draw_text(const char *str, int x, int y)
         x = (gr_fb_width() - str_len_px) / 2;
     if (y < 0)
         y = (gr_fb_height() - char_height) / 2;
-    gr_text(x, y, str);
+    gr_text(x, y, str, 0);
 
     return y + char_height;
 }
@@ -717,9 +717,7 @@ static void redraw_screen(struct charger *charger)
 
 static void kick_animation(struct animation *anim)
 {
-#ifdef ALLOW_SUSPEND_IN_CHARGER
     write_file(SYS_POWER_STATE, "on", strlen("on"));
-#endif
     anim->run = true;
 }
 
@@ -744,9 +742,7 @@ static void update_screen_state(struct charger *charger, int64_t now)
         reset_animation(batt_anim);
         charger->next_screen_transition = -1;
         gr_fb_blank(true);
-#ifdef ALLOW_SUSPEND_IN_CHARGER
         write_file(SYS_POWER_STATE, "mem", strlen("mem"));
-#endif
         LOGV("[%lld] animation done\n", now);
         if (charger->num_supplies_online > 0)
             request_suspend(true);
@@ -894,11 +890,6 @@ static void process_key(struct charger *charger, int code, int64_t now)
                 kick_animation(charger->batt_anim);
             }
         }
-    } else {
-        if (key->pending) {
-            request_suspend(false);
-            kick_animation(charger->batt_anim);
-        }
     }
 
     key->pending = false;
@@ -907,7 +898,6 @@ static void process_key(struct charger *charger, int code, int64_t now)
 static void handle_input_state(struct charger *charger, int64_t now)
 {
     process_key(charger, KEY_POWER, now);
-    process_key(charger, KEY_HOME, now);
 
     if (charger->next_key_check != -1 && now > charger->next_key_check)
         charger->next_key_check = -1;

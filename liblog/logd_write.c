@@ -27,15 +27,15 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
+#include <log/logger.h>
+#include <log/logd.h>
+#include <log/log.h>
+
 #ifdef MOTOROLA_LOG
 #if HAVE_LIBC_SYSTEM_PROPERTIES
 #include <sys/system_properties.h>
 #endif
 #endif
-
-#include <cutils/logger.h>
-#include <cutils/logd.h>
-#include <cutils/log.h>
 
 #define LOG_BUF_SIZE	1024
 
@@ -180,7 +180,6 @@ int __android_log_loggable(int prio, const char *tag)
     /* no system property routines, fallback to a default */
     nprio = prio_fallback;
 #endif
-
     return ((prio >= nprio) ? 1 : 0);
 }
 #endif
@@ -263,18 +262,7 @@ int __android_log_write(int prio, const char *tag, const char *msg)
         !strcmp(tag, "STK") ||
         !strcmp(tag, "CDMA") ||
         !strcmp(tag, "PHONE") ||
-        !strcmp(tag, "SMS") ||
-        !strcmp(tag, "KINETO") ||
-        !strncmp(tag, "KIPC", 4) ||
-        !strncmp(tag, "Kineto", 6) ||
-        !strncmp(tag, "QCRIL", 5) ||
-        !strncmp(tag, "QC-RIL", 6) ||
-        !strncmp(tag, "QC-QMI", 6) ||
-        !strncmp(tag, "QC-ONCRPC", 9) ||
-        !strncmp(tag, "QC-DSI", 6) ||
-        !strcmp(tag, "QC-NETMGR-LIB") ||
-        !strcmp(tag, "QC-QDP") ||
-        !strcmp(tag, "Diag_Lib")) {
+        !strcmp(tag, "SMS")) {
             log_id = LOG_ID_RADIO;
             // Inform third party apps/ril/radio.. to use Rlog or RLOG
             snprintf(tmp_tag, sizeof(tmp_tag), "use-Rlog/RLOG-%s", tag);
@@ -309,15 +297,7 @@ int __android_log_buf_write(int bufID, int prio, const char *tag, const char *ms
         !strcmp(tag, "STK") ||
         !strcmp(tag, "CDMA") ||
         !strcmp(tag, "PHONE") ||
-        !strcmp(tag, "SMS") ||
-        !strcmp(tag, "KINETO") ||
-        !strncmp(tag, "KIPC", 4) ||
-        !strncmp(tag, "Kineto", 6) ||
-        !strncmp(tag, "QCRIL", 5) ||
-        !strncmp(tag, "QC-RIL", 6) ||
-        !strncmp(tag, "QC-QMI", 6) ||
-        !strncmp(tag, "QC-ONCRPC", 9) ||
-        !strncmp(tag, "QC-DSI", 6))) {
+        !strcmp(tag, "SMS"))) {
             bufID = LOG_ID_RADIO;
             // Inform third party apps/ril/radio.. to use Rlog or RLOG
             snprintf(tmp_tag, sizeof(tmp_tag), "use-Rlog/RLOG-%s", tag);

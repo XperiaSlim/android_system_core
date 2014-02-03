@@ -33,13 +33,13 @@
 #include <sys/wait.h>
 #include <linux/loop.h>
 #include <cutils/partition_utils.h>
+#include <cutils/android_reboot.h>
 #include <sys/system_properties.h>
 #include <fs_mgr.h>
+#include <fts.h>
 
-#ifdef HAVE_SELINUX
 #include <selinux/selinux.h>
 #include <selinux/label.h>
-#endif
 
 #include "init.h"
 #include "keywords.h"
@@ -60,7 +60,7 @@ static int write_file(const char *path, const char *value)
 {
     int fd, ret, len;
 
-    fd = open(path, O_WRONLY|O_CREAT, 0622);
+    fd = open(path, O_WRONLY|O_CREAT|O_NOFOLLOW, 0600);
 
     if (fd < 0)
         return -errno;
@@ -347,32 +347,6 @@ int do_insmod(int nargs, char **args)
     return do_insmod_inner(nargs, args, size);
 }
 
-int do_log(int nargs, char **args)
-{
-    char* par[nargs+3];
-    char* value;
-    int i;
-
-    par[0] = "exec";
-    par[1] = "/system/bin/log";
-    par[2] = "-tinit";
-    for (i = 1; i < nargs; ++i) {
-        value = args[i];
-        if (value[0] == '$') {
-            /* system property if value starts with '$' */
-            value++;
-            if (value[0] != '$') {
-                value = (char*) property_get(value);
-                if (!value) value = args[i];
-            }
-        }
-        par[i+2] = value;
-    }
-    par[nargs+2] = NULL;
-
-    return do_exec(nargs+2, par);
-}
-
 int do_mkdir(int nargs, char **args)
 {
     mode_t mode = 0755;
@@ -548,6 +522,7 @@ int do_mount_all(int nargs, char **args)
     int child_ret = -1;
     int status;
     const char *prop;
+    struct fstab *fstab;
 
     if (nargs != 2) {
         return -1;
@@ -571,7 +546,9 @@ int do_mount_all(int nargs, char **args)
     } else if (pid == 0) {
         /* child, call fs_mgr_mount_all() */
         klog_set_level(6);  /* So we can see what fs_mgr_mount_all() does */
-        child_ret = fs_mgr_mount_all(args[1]);
+        fstab = fs_mgr_read_fstab(args[1]);
+        child_ret = fs_mgr_mount_all(fstab);
+        fs_mgr_free_fstab(fstab);
         if (child_ret == -1) {
             ERROR("fs_mgr_mount_all returned an error\n");
         }
@@ -596,25 +573,33 @@ int do_mount_all(int nargs, char **args)
     return ret;
 }
 
+int do_swapon_all(int nargs, char **args)
+{
+    struct fstab *fstab;
+    int ret;
+
+    fstab = fs_mgr_read_fstab(args[1]);
+    ret = fs_mgr_swapon_all(fstab);
+    fs_mgr_free_fstab(fstab);
+
+    return ret;
+}
+
 int do_setcon(int nargs, char **args) {
-#ifdef HAVE_SELINUX
     if (is_selinux_enabled() <= 0)
         return 0;
     if (setcon(args[1]) < 0) {
         return -errno;
     }
-#endif
     return 0;
 }
 
 int do_setenforce(int nargs, char **args) {
-#ifdef HAVE_SELINUX
     if (is_selinux_enabled() <= 0)
         return 0;
     if (security_setenforce(atoi(args[1])) < 0) {
         return -errno;
     }
-#endif
     return 0;
 }
 
@@ -678,10 +663,46 @@ int do_restart(int nargs, char **args)
     struct service *svc;
     svc = service_find_by_name(args[1]);
     if (svc) {
-        service_stop(svc);
-        service_start(svc, NULL);
+        service_restart(svc);
     }
     return 0;
+}
+
+int do_powerctl(int nargs, char **args)
+{
+    char command[PROP_VALUE_MAX];
+    int res;
+    int len = 0;
+    int cmd = 0;
+    char *reboot_target;
+
+    res = expand_props(command, args[1], sizeof(command));
+    if (res) {
+        ERROR("powerctl: cannot expand '%s'\n", args[1]);
+        return -EINVAL;
+    }
+
+    if (strncmp(command, "shutdown", 8) == 0) {
+        cmd = ANDROID_RB_POWEROFF;
+        len = 8;
+    } else if (strncmp(command, "reboot", 6) == 0) {
+        cmd = ANDROID_RB_RESTART2;
+        len = 6;
+    } else {
+        ERROR("powerctl: unrecognized command '%s'\n", command);
+        return -EINVAL;
+    }
+
+    if (command[len] == ',') {
+        reboot_target = &command[len + 1];
+    } else if (command[len] == '\0') {
+        reboot_target = "";
+    } else {
+        ERROR("powerctl: unrecognized reboot target '%s'\n", &command[len]);
+        return -EINVAL;
+    }
+
+    return android_reboot(cmd, 0, reboot_target);
 }
 
 int do_trigger(int nargs, char **args)
@@ -804,6 +825,47 @@ int do_chown(int nargs, char **args) {
     } else if (nargs == 4) {
         if (_chown(args[3], decode_uid(args[1]), decode_uid(args[2])) < 0)
             return -errno;
+    } else if (nargs == 5) {
+        int ret = 0;
+        int ftsflags = FTS_PHYSICAL;
+        FTS *fts;
+        FTSENT *ftsent;
+        char *options = args[1];
+        uid_t uid = decode_uid(args[2]);
+        uid_t gid = decode_uid(args[3]);
+        char * path_argv[] = {args[4], NULL};
+        if (strcmp(options, "-R")) {
+            ERROR("do_chown: Invalid argument: %s\n", args[1]);
+            return -EINVAL;
+        }
+        fts = fts_open(path_argv, ftsflags, NULL);
+        if (!fts) {
+            ERROR("do_chown: Error traversing hierarchy starting at %s\n", path_argv[0]);
+            return -errno;
+        }
+        while ((ftsent = fts_read(fts))) {
+            switch (ftsent->fts_info) {
+            case FTS_DP:
+            case FTS_SL:
+                break;
+            case FTS_DNR:
+            case FTS_ERR:
+            case FTS_NS:
+                ERROR("do_chown: Could not access %s\n", ftsent->fts_path);
+                fts_set(fts, ftsent, FTS_SKIP);
+                ret = -errno;
+                break;
+            default:
+                if (_chown(ftsent->fts_accpath, uid, gid) < 0) {
+                    ret = -errno;
+                    fts_set(fts, ftsent, FTS_SKIP);
+                }
+                break;
+            }
+        }
+        fts_close(fts);
+        if (ret)
+            return ret;
     } else {
         return -1;
     }
@@ -842,36 +904,30 @@ int do_restorecon(int nargs, char **args) {
 }
 
 int do_setsebool(int nargs, char **args) {
-#ifdef HAVE_SELINUX
-    SELboolean *b = alloca(nargs * sizeof(SELboolean));
-    char *v;
-    int i;
+    const char *name = args[1];
+    const char *value = args[2];
+    SELboolean b;
+    int ret;
 
     if (is_selinux_enabled() <= 0)
         return 0;
 
-    for (i = 1; i < nargs; i++) {
-        char *name = args[i];
-        v = strchr(name, '=');
-        if (!v) {
-            ERROR("setsebool: argument %s had no =\n", name);
-            return -EINVAL;
-        }
-        *v++ = 0;
-        b[i-1].name = name;
-        if (!strcmp(v, "1") || !strcasecmp(v, "true") || !strcasecmp(v, "on"))
-            b[i-1].value = 1;
-        else if (!strcmp(v, "0") || !strcasecmp(v, "false") || !strcasecmp(v, "off"))
-            b[i-1].value = 0;
-        else {
-            ERROR("setsebool: invalid value %s\n", v);
-            return -EINVAL;
-        }
+    b.name = name;
+    if (!strcmp(value, "1") || !strcasecmp(value, "true") || !strcasecmp(value, "on"))
+        b.value = 1;
+    else if (!strcmp(value, "0") || !strcasecmp(value, "false") || !strcasecmp(value, "off"))
+        b.value = 0;
+    else {
+        ERROR("setsebool: invalid value %s\n", value);
+        return -EINVAL;
     }
 
-    if (security_set_boolean_list(nargs - 1, b, 0) < 0)
-        return -errno;
-#endif
+    if (security_set_boolean_list(1, &b, 0) < 0) {
+        ret = -errno;
+        ERROR("setsebool: could not set %s to %s\n", name, value);
+        return ret;
+    }
+
     return 0;
 }
 

@@ -22,10 +22,9 @@
 #include <ctype.h>
 #include <errno.h>
 #include <time.h>
+#include <ftw.h>
 
-#ifdef HAVE_SELINUX
 #include <selinux/label.h>
-#endif
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -85,19 +84,23 @@ unsigned int decode_uid(const char *s)
  * daemon. We communicate the file descriptor's value via the environment
  * variable ANDROID_SOCKET_ENV_PREFIX<name> ("ANDROID_SOCKET_foo").
  */
-int create_socket(const char *name, int type, mode_t perm, uid_t uid, gid_t gid)
+int create_socket(const char *name, int type, mode_t perm, uid_t uid, gid_t gid, const char *socketcon)
 {
     struct sockaddr_un addr;
     int fd, ret;
-#ifdef HAVE_SELINUX
-    char *secon;
-#endif
+    char *filecon;
+
+    if (socketcon)
+        setsockcreatecon(socketcon);
 
     fd = socket(PF_UNIX, type, 0);
     if (fd < 0) {
         ERROR("Failed to open socket '%s': %s\n", name, strerror(errno));
         return -1;
     }
+
+    if (socketcon)
+        setsockcreatecon(NULL);
 
     memset(&addr, 0 , sizeof(addr));
     addr.sun_family = AF_UNIX;
@@ -110,14 +113,12 @@ int create_socket(const char *name, int type, mode_t perm, uid_t uid, gid_t gid)
         goto out_close;
     }
 
-#ifdef HAVE_SELINUX
-    secon = NULL;
+    filecon = NULL;
     if (sehandle) {
-        ret = selabel_lookup(sehandle, &secon, addr.sun_path, S_IFSOCK);
+        ret = selabel_lookup(sehandle, &filecon, addr.sun_path, S_IFSOCK);
         if (ret == 0)
-            setfscreatecon(secon);
+            setfscreatecon(filecon);
     }
-#endif
 
     ret = bind(fd, (struct sockaddr *) &addr, sizeof (addr));
     if (ret) {
@@ -125,10 +126,8 @@ int create_socket(const char *name, int type, mode_t perm, uid_t uid, gid_t gid)
         goto out_unlink;
     }
 
-#ifdef HAVE_SELINUX
     setfscreatecon(NULL);
-    freecon(secon);
-#endif
+    freecon(filecon);
 
     chown(addr.sun_path, uid, gid);
     chmod(addr.sun_path, perm);
@@ -313,14 +312,27 @@ int mkdir_recursive(const char *pathname, mode_t mode)
     return 0;
 }
 
+/*
+ * replaces any unacceptable characters with '_', the
+ * length of the resulting string is equal to the input string
+ */
 void sanitize(char *s)
 {
+    const char* accept =
+            "abcdefghijklmnopqrstuvwxyz"
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            "0123456789"
+            "_-.";
+
     if (!s)
         return;
-    while (isalnum(*s))
-        s++;
-    *s = 0;
+
+    for (; *s; s++) {
+        s += strspn(s, accept);
+        if (*s) *s = '_';
+    }
 }
+
 void make_link(const char *oldpath, const char *newpath)
 {
     int ret;
@@ -467,31 +479,27 @@ int make_dir(const char *path, mode_t mode)
 {
     int rc;
 
-#ifdef HAVE_SELINUX
     char *secontext = NULL;
 
     if (sehandle) {
         selabel_lookup(sehandle, &secontext, path, mode);
         setfscreatecon(secontext);
     }
-#endif
 
     rc = mkdir(path, mode);
 
-#ifdef HAVE_SELINUX
     if (secontext) {
         int save_errno = errno;
         freecon(secontext);
         setfscreatecon(NULL);
         errno = save_errno;
     }
-#endif
+
     return rc;
 }
 
 int restorecon(const char *pathname)
 {
-#ifdef HAVE_SELINUX
     char *secontext = NULL;
     struct stat sb;
     int i;
@@ -508,6 +516,19 @@ int restorecon(const char *pathname)
         return -errno;
     }
     freecon(secontext);
-#endif
     return 0;
+}
+
+static int nftw_restorecon(const char* filename, const struct stat* statptr,
+    int fileflags, struct FTW* pftw)
+{
+    restorecon(filename);
+    return 0;
+}
+
+int restorecon_recursive(const char* pathname)
+{
+    int fd_limit = 20;
+    int flags = FTW_DEPTH | FTW_MOUNT | FTW_PHYS;
+    return nftw(pathname, nftw_restorecon, fd_limit, flags);
 }
